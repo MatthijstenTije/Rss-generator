@@ -8,56 +8,72 @@ app = Flask(__name__)
 
 @app.route("/rss")
 def rss_feed():
-    # Get URL from query parameter
-    url = request.args.get("url", "https://www.vpro.nl/frontlinie/artikelen")
-    if not url.startswith("http"):
-        return Response("Please provide a full URL (including https://)", status=400)
+    # Get URL from query string
+    target_url = request.args.get("url", "").strip()
+    if not target_url:
+        return Response(
+            '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Error</title><description>Missing ?url= parameter</description></channel></rss>',
+            mimetype="application/rss+xml",
+        )
 
+    # Fetch the page
     try:
-        html = requests.get(url, timeout=10).text
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(target_url, headers=headers, timeout=10)
+        res.raise_for_status()
     except Exception as e:
-        return Response(f"Error fetching {url}: {e}", status=500)
+        return Response(
+            f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Error fetching URL</title><description>{str(e)}</description></channel></rss>',
+            mimetype="application/rss+xml",
+        )
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(res.text, "html.parser")
 
-    # Find links to articles (common VPRO teaser structure)
-    links = soup.select("a.teaser__link, a.c-teaser__link, a.c-article-teaser__link")
-
-    if not links:
-        return Response(f"No articles found for {url}", mimetype="text/plain")
+    # Try to find article links
+    selectors = ["a.c-teaser__link", "a.teaser__link", "a.c-article-teaser__link"]
+    links = []
+    for sel in selectors:
+        found = soup.select(sel)
+        if found:
+            links = found
+            break
 
     items = ""
-    for article in links[:10]:
-        href = article.get("href")
+    for a in links[:10]:
+        href = a.get("href")
         if not href:
             continue
         if not href.startswith("http"):
-            href = f"https://{urlparse(url).netloc}{href}"
-        title = article.get_text(strip=True)
-        if not title:
-            continue
-
+            href = f"https://{urlparse(target_url).netloc}{href}"
+        title = a.get_text(strip=True) or href
+        pub_date = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
         items += f"""
         <item>
-          <title>{title}</title>
-          <link>{href}</link>
-          <guid>{href}</guid>
-          <pubDate>{datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate>
-        </item>
-        """
+            <title>{title}</title>
+            <link>{href}</link>
+            <guid>{href}</guid>
+            <pubDate>{pub_date}</pubDate>
+        </item>"""
 
-    rss = f"""<?xml version="1.0" encoding="UTF-8"?>
+    if not items:
+        items = "<item><title>No articles found</title><link>{target_url}</link></item>"
+
+    rss_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
     <rss version="2.0">
       <channel>
-        <title>RSS Generator Feed</title>
-        <link>{url}</link>
-        <description>Automatisch gegenereerde RSS-feed voor {url}</description>
+        <title>Generated RSS Feed</title>
+        <link>{target_url}</link>
+        <description>Automatic feed for {target_url}</description>
         <language>nl-nl</language>
         {items}
       </channel>
     </rss>"""
 
-    return Response(rss, mimetype="application/rss+xml")
+    return Response(rss_xml, mimetype="application/rss+xml")
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+
 
 
 if __name__ == "__main__":
